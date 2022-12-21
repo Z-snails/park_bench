@@ -1,0 +1,10 @@
+[custom.all.park_bench]
+type = "local"
+path = "."
+ipkg = "park_bench.ipkg"
+test = "test/test.ipkg"
+
+[custom.all.park_bench-test]
+type = "local"
+path = "test"
+ipkg = "test.ipkg"
