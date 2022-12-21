@@ -44,9 +44,6 @@ notQuiteStandardForm sigFigs x =
              in show $ roundToSf sigFigs x
         else padRight (sigFigs + 1) '0' (show mant) ++ "e" ++ show (cast {to=Integer} exp)
 
-testTime : Clock Duration
-testTime = makeDuration 2 0
-
 nanoInSec : Integer
 nanoInSec = 1000000000
 
@@ -65,6 +62,7 @@ record Timed a where
     result : a
     description : String
     runs : Nat
+    totalTime : Clock Duration
     time : Clock Duration
 
 showPlural : String -> Nat -> String
@@ -82,9 +80,11 @@ export
 Show (Timed a) where
     show timed = """
     \{timed.description} took \{showTime 0 5 timed.time}
-      \{show timed.runs} \{showPlural "run" timed.runs}
-      \{notQuiteStandardForm 3 $ getOpsPerSec timed.runs timed.time} operations per second
+      \{show timed.runs} \{showPlural "run" timed.runs} (total time: \{showTime 0 5 timed.totalTime})
     """
+    -- TODO: fix this
+    --   \{notQuiteStandardForm 3 $ getOpsPerSec timed.runs timed.time} operations per second
+    -- """
 
 ||| A black-box function to call a closure
 %noinline
@@ -97,7 +97,7 @@ timeIO description act = do
     result <- act
     end <- clockTime Monotonic
     let time = timeDifference end start
-    pure $ MkTimed {description, result, runs = 1, time}
+    pure $ MkTimed {description, result, runs = 1, totalTime = time, time}
 
 callNTimes : (a -> b) -> a -> b -> Nat -> IO b
 callNTimes f x acc Z = pure acc
@@ -109,14 +109,28 @@ callNTimes f x acc (S k) = do
 divide : Clock Duration -> Nat -> Clock Duration
 divide c runs = fromNano' $ toNano' c `div` cast runs
 
+||| Default duration of each benchmark
+public export
+defaultTime : Clock Duration
+defaultTime = makeDuration 1 0
+
+||| Benchmark a function with a given input.
+||| This runs the function repeatedly until enough time has passed.
+||| The default time to benchmark is 1 second, but this can be changed
+||| with `targetTime`.
 export
-bench : String -> (a -> b) -> a -> IO (Timed b)
+bench :
+    {default defaultTime targetTime : Clock Duration} ->
+    (description : String) ->
+    (a -> b) ->
+    a ->
+    IO (Timed b)
 bench description f x = do
     warmup <- timeIO description $ call f x
-    if warmup.time > testTime
+    if warmup.time > targetTime
         then pure warmup
         else do
-            let runs = cast {to=Nat} $ toNano' testTime `div` toNano' warmup.time
+            let runs = cast {to=Nat} $ toNano' targetTime `div` toNano' warmup.time
             let False = runs <= 1
                 | True => pure warmup
             res <- timeIO description $ callNTimes f x warmup.result runs
