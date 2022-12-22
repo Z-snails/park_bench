@@ -73,8 +73,7 @@ getOpsPerSec : (runs : Nat) -> (time : Clock Duration) -> Double
 getOpsPerSec runs time =
     let runs = cast {to = Double} runs
         timeNs = cast {to = Double} $ toNano' time
-        timeSec = timeNs / cast nanoInSec
-     in runs / timeSec
+     in (runs * cast nanoInSec) / timeNs
 
 export
 Show (Timed a) where
@@ -86,11 +85,15 @@ Show (Timed a) where
     --   \{notQuiteStandardForm 3 $ getOpsPerSec timed.runs timed.time} operations per second
     -- """
 
-||| A black-box function to call a closure
+||| A black-box function to call a closure.
+|||
+||| This treats evaluating a closure as a side effect
 %noinline
 call : (a -> b) -> a -> IO b
-call f x = pure $ f x
+call f x = fromPrim $ \w => MkIORes (f x) w
 
+||| Time an `IO` action
+export
 timeIO : String -> IO a -> IO (Timed a)
 timeIO description act = do
     start <- clockTime Monotonic
@@ -99,11 +102,9 @@ timeIO description act = do
     let time = timeDifference end start
     pure $ MkTimed {description, result, runs = 1, totalTime = time, time}
 
-callNTimes : (a -> b) -> a -> b -> Nat -> IO b
-callNTimes f x acc Z = pure acc
-callNTimes f x acc (S k) = do
-    acc <- call f x
-    callNTimes f x acc k
+repeat : IO a -> Nat -> a -> IO a
+repeat act Z acc = pure acc
+repeat act (S k) acc = act >>= repeat act k
 
 %inline
 divide : Clock Duration -> Nat -> Clock Duration
@@ -114,7 +115,28 @@ public export
 defaultTime : Clock Duration
 defaultTime = makeDuration 1 0
 
+||| Benchmark an IO operation.
+|||
+||| This runs the given action repeatedly, until the target time has been reached.
+export
+benchIO :
+    {default defaultTime targetTime : Clock Duration} ->
+    (description : String) ->
+    (act : IO a) ->
+    IO (Timed a)
+benchIO description act = do
+    warmup <- timeIO description act
+    if warmup.time > targetTime
+        then pure warmup
+        else do
+            let runs = cast {to=Nat} $ toNano' targetTime `div` toNano' warmup.time
+            let False = runs <= 1
+                | True => pure warmup
+            res <- timeIO description $ repeat act runs warmup.result
+            pure $ { runs := runs, time $= (`divide` runs) } res
+
 ||| Benchmark a function with a given input.
+|||
 ||| This runs the function repeatedly until enough time has passed.
 ||| The default time to benchmark is 1 second, but this can be changed
 ||| with `targetTime`.
@@ -125,13 +147,4 @@ bench :
     (a -> b) ->
     a ->
     IO (Timed b)
-bench description f x = do
-    warmup <- timeIO description $ call f x
-    if warmup.time > targetTime
-        then pure warmup
-        else do
-            let runs = cast {to=Nat} $ toNano' targetTime `div` toNano' warmup.time
-            let False = runs <= 1
-                | True => pure warmup
-            res <- timeIO description $ callNTimes f x warmup.result runs
-            pure $ { runs := runs, time $= (`divide` runs) } res
+bench description f x = benchIO description (call f x)
